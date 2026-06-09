@@ -1,0 +1,26 @@
+# Virtual environments
+.venv/
+venv/
+env/
+TrafficSignAiDetector/.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# YOLO/model files
+*.pt
+*.onnx
+*.engine
+*.torchscript
+
+# YOLO outputs
+runs/
+TrafficSignAiDetector/runs/
+
+# Testing folder
+testing_pt/
+testing pt/
+
+# Debug/images if not needed
+debug_received.jpg
