@@ -24,3 +24,15 @@ testing pt/
 
 # Debug/images if not needed
 debug_received.jpg
+
+TrafficSignAiDetector/.venv/
+TrafficSignAiDetector/runs/
+.venv/
+venv/
+env/
+*.pt
+*.onnx
+*.engine
+*.torchscript
+__pycache__/
+*.pyc
