@@ -6,13 +6,36 @@ from ultralytics import YOLO
 from pathlib import Path
 import base64
 import logging
-from typing import Optional, Dict, List
+from typing import Optional, Dict
+import psutil
+import os
+import time
+import torch
 
+
+# =========================
+# GPU monitor setup
+# =========================
+try:
+    import pynvml
+    pynvml.nvmlInit()
+    GPU_AVAILABLE = True
+except Exception:
+    GPU_AVAILABLE = False
+
+
+# =========================
 # Configure logging
+# =========================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# =========================
+# FastAPI app
+# =========================
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,112 +43,213 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# =========================
+# Paths
+# =========================
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best.pt"
 
-# Load model with error handling
+
+# =========================
+# Load YOLO model
+# =========================
 model: Optional[YOLO] = None
+
 try:
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
+
     model = YOLO(str(MODEL_PATH))
+
     logger.info("Model loaded successfully")
+    logger.info(f"Model path: {MODEL_PATH}")
+    logger.info(f"Number of classes: {len(model.names)}")
+    logger.info(f"Classes: {model.names}")
+
 except Exception as e:
     logger.error(f"Failed to load model: {e}")
 
+
+# =========================
 # Classes map
+# =========================
 CLASSES_MAP: Dict[int, str] = {
-    0: "W.224",
-    1: "W.205c",
-    2: "P.102",
-    3: "R.302a",
-    4: "W.205a",
-    5: "W.207",
-    6: "W.201a",
-    7: "P.123a",
-    8: "I.434a",
-    9: "R.303",
-    10: "P.130",
-    11: "I.409",
-    12: "R.415a",
-    13: "W.245a",
-    14: "P.106a*Xe tải",
-    15: "W.203c",
-    16: "P.117*",
-    17: "P.124a*",
-    18: "P.107",
-    19: "P.124d",
-    20: "P.103a",
-    21: "W.203b",
-    22: "W.221b",
-    23: "P.111",
-    24: "P.129",
-    25: "S.505a*Xe máy",
-    26: "W.246a",
-    27: "W.225",
-    28: "S.505a*Xe tải và công",
-    29: "P.104",
-    30: "S.505a*Xe tải",
-    31: "Camera",
-    32: "P.123b",
-    33: "W.202b",
-    34: "B.8a",
-    35: "P.137",
-    36: "P.139",
-    37: "W.205b",
-    38: "P.127*50",
-    39: "P.127*60",
-    40: "P.127*80",
-    41: "P.127*40",
-    42: "R.301e",
-    43: "W.239b*",
-    44: "W.233",
-    45: "I.407a",
-    46: "P.131a",
-    47: "P.124b1",
-    48: "W.210",
-    49: "P.124c",
-    50: "W.201b",
-    51: "W.246c",
+    0:'Speed limit (20km/h)', 1:'Speed limit (30km/h)',
+    2:'Speed limit (50km/h)', 3:'Speed limit (60km/h)',
+    4:'Speed limit (70km/h)', 5:'Speed limit (80km/h)',
+    6:'End of speed limit (80km/h)', 7:'Speed limit (100km/h)',
+    8:'Speed limit (120km/h)', 9:'No passing',
+    10:'No passing veh over 3.5 tons', 11:'Right-of-way at intersection',
+    12:'Priority road', 13:'Yield', 14:'Stop',
+    15:'No vehicles', 16:'Veh > 3.5 tons prohibited',
+    17:'No entry', 18:'General caution',
+    19:'Dangerous curve left', 20:'Dangerous curve right',
+    21:'Double curve', 22:'Bumpy road',
+    23:'Slippery road', 24:'Road narrows on the right',
+    25:'Road work', 26:'Traffic signals',
+    27:'Pedestrians', 28:'Children crossing',
+    29:'Bicycles crossing', 30:'Beware of ice/snow',
+    31:'Wild animals crossing', 32:'End speed + passing limits',
+    33:'Turn right ahead', 34:'Turn left ahead',
+    35:'Ahead only', 36:'Go straight or right',
+    37:'Go straight or left', 38:'Keep right',
+    39:'Keep left', 40:'Roundabout mandatory',
+    41:'End of no passing', 42:'End no passing veh > 3.5 tons'
 }
 
+
+# =========================
 # Configuration constants
+# =========================
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
 CONF_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.45
 MAX_DETECTIONS = 10
+
 BOX_COLOR = (0, 255, 0)
 BOX_THICKNESS = 2
 FONT_SCALE = 0.5
 TEXT_THICKNESS = 1
 
+# Nếu bạn đang chạy CPU thì để "cpu"
+# Nếu muốn dùng GPU NVIDIA, thử đổi thành 0 hoặc "cuda"
+PREDICT_DEVICE = "cuda"
+
+
+# =========================
+# Root endpoint
+# =========================
+@app.get("/")
+async def root():
+    return {
+        "message": "Traffic Sign Detection API is running",
+        "health": "/health",
+        "predict": "/predict",
+        "classes": "/classes",
+        "metrics": "/metrics",
+        "docs": "/docs"
+    }
+
+
+# =========================
+# Health check
+# =========================
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    return {"status": "ok"}
 
+    return {
+        "status": "ok",
+        "model_loaded": True,
+        "model_path": str(MODEL_PATH),
+        "num_classes": len(model.names),
+        "torch_cuda_available": torch.cuda.is_available(),
+        "torch_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+        "predict_device": PREDICT_DEVICE
+    }
+
+# =========================
+# Metrics endpoint
+# =========================
+@app.get("/metrics")
+async def get_metrics():
+    """
+    Return real-time system usage:
+    - CPU usage
+    - RAM usage
+    - Current Python process RAM usage
+    - GPU usage if NVIDIA GPU is available
+    """
+
+    process = psutil.Process(os.getpid())
+
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+
+    memory = psutil.virtual_memory()
+    process_memory = process.memory_info()
+
+    metrics = {
+        "timestamp": time.time(),
+
+        "cpu_percent": cpu_percent,
+
+        "ram_percent": memory.percent,
+        "ram_used_gb": round(memory.used / (1024 ** 3), 2),
+        "ram_total_gb": round(memory.total / (1024 ** 3), 2),
+
+        "process_ram_mb": round(process_memory.rss / (1024 ** 2), 2),
+
+        "gpu_available": GPU_AVAILABLE
+    }
+
+    if GPU_AVAILABLE:
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+
+            gpu_name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(gpu_name, bytes):
+                gpu_name = gpu_name.decode("utf-8")
+
+            gpu_util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            gpu_mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+
+            metrics.update({
+                "gpu_name": gpu_name,
+                "gpu_percent": gpu_util.gpu,
+                "gpu_memory_percent": round((gpu_mem.used / gpu_mem.total) * 100, 2),
+                "gpu_memory_used_gb": round(gpu_mem.used / (1024 ** 3), 2),
+                "gpu_memory_total_gb": round(gpu_mem.total / (1024 ** 3), 2)
+            })
+
+        except Exception as e:
+            metrics.update({
+                "gpu_error": str(e)
+            })
+
+    return metrics
+
+
+# =========================
+# Helper function: process detections
+# =========================
 def process_detections(results, original_img: np.ndarray):
     detections = []
     img_with_boxes = original_img.copy()
 
     boxes = getattr(results, "boxes", None)
+
     if boxes is None:
-        # fallback to plot if boxes missing
         plotted = results.plot() if hasattr(results, "plot") else None
+
         if plotted is not None:
-            img_with_boxes = cv2.cvtColor(plotted, cv2.COLOR_RGB2BGR) if plotted.ndim == 3 and plotted.shape[2] == 3 else plotted
-        success, buffer = cv2.imencode(".jpg", img_with_boxes, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            img_with_boxes = (
+                cv2.cvtColor(plotted, cv2.COLOR_RGB2BGR)
+                if plotted.ndim == 3 and plotted.shape[2] == 3
+                else plotted
+            )
+
+        success, buffer = cv2.imencode(
+            ".jpg",
+            img_with_boxes,
+            [cv2.IMWRITE_JPEG_QUALITY, 85]
+        )
+
         if not success:
             raise HTTPException(status_code=500, detail="Failed to encode image")
-        return [], base64.b64encode(buffer.tobytes()).decode("utf-8")
+
+        encoded_image = base64.b64encode(buffer.tobytes()).decode("utf-8")
+        return [], encoded_image
 
     for box in boxes:
-        # get coordinates robustly
+        # =========================
+        # Get bounding box coordinates
+        # =========================
         coords = None
+
         try:
-            # box.xyxy may be tensor-like
             xy = box.xyxy[0] if hasattr(box.xyxy, "__len__") and len(box.xyxy) > 0 else box.xyxy
             coords = [float(xy[0]), float(xy[1]), float(xy[2]), float(xy[3])]
         except Exception:
@@ -138,85 +262,152 @@ def process_detections(results, original_img: np.ndarray):
                     continue
 
         x1, y1, x2, y2 = map(int, coords)
-        h_img, w_img = img_with_boxes.shape[:2]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w_img - 1, x2), min(h_img - 1, y2)
 
-        # safe class id and confidence
+        h_img, w_img = img_with_boxes.shape[:2]
+
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w_img - 1, x2)
+        y2 = min(h_img - 1, y2)
+
+        # =========================
+        # Get class id
+        # =========================
         try:
             cls_val = box.cls if not hasattr(box.cls, "__len__") else box.cls[0]
             cls_id = int(cls_val.item()) if hasattr(cls_val, "item") else int(cls_val)
         except Exception:
             cls_id = -1
+
+        # =========================
+        # Get confidence
+        # =========================
         try:
             conf_val = box.conf if not hasattr(box.conf, "__len__") else box.conf[0]
             conf = float(conf_val.item()) if hasattr(conf_val, "item") else float(conf_val)
         except Exception:
             conf = 0.0
 
+        # =========================
+        # Get class name
+        # =========================
         class_name = CLASSES_MAP.get(cls_id, "Unknown")
 
-        # draw box
-        cv2.rectangle(img_with_boxes, (x1, y1), (x2, y2), BOX_COLOR, BOX_THICKNESS)
+        # =========================
+        # Draw bounding box
+        # =========================
+        cv2.rectangle(
+            img_with_boxes,
+            (x1, y1),
+            (x2, y2),
+            BOX_COLOR,
+            BOX_THICKNESS
+        )
 
-        # label text (use name + confidence)
         label = f"{class_name} {conf:.2f}"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, TEXT_THICKNESS)
-        # background rectangle for text
+
+        (tw, th), _ = cv2.getTextSize(
+            label,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            FONT_SCALE,
+            TEXT_THICKNESS
+        )
+
         yy = max(0, y1 - th - 6)
-        cv2.rectangle(img_with_boxes, (x1, yy), (x1 + tw + 6, y1), BOX_COLOR, -1)
-        cv2.putText(img_with_boxes, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (0, 0, 0), TEXT_THICKNESS, cv2.LINE_AA)
+
+        cv2.rectangle(
+            img_with_boxes,
+            (x1, yy),
+            (x1 + tw + 6, y1),
+            BOX_COLOR,
+            -1
+        )
+
+        cv2.putText(
+            img_with_boxes,
+            label,
+            (x1 + 3, y1 - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            FONT_SCALE,
+            (0, 0, 0),
+            TEXT_THICKNESS,
+            cv2.LINE_AA
+        )
 
         detections.append({
             "class_id": cls_id,
             "class_name": class_name,
-            "confidence": round(conf, 3)
+            "confidence": round(conf, 3),
+            "box": {
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2
+            }
         })
-        logger.info(f"Detected sign: {class_name} (id={cls_id}, conf={conf:.3f})")
 
-    # encode to base64
-    success, buffer = cv2.imencode(".jpg", img_with_boxes, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        logger.info(
+            f"Detected sign: {class_name} "
+            f"(id={cls_id}, conf={conf:.3f})"
+        )
+
+    # =========================
+    # Encode image to base64
+    # =========================
+    success, buffer = cv2.imencode(
+        ".jpg",
+        img_with_boxes,
+        [cv2.IMWRITE_JPEG_QUALITY, 85]
+    )
+
     if not success:
         raise HTTPException(status_code=500, detail="Failed to encode image")
+
     encoded_image = base64.b64encode(buffer.tobytes()).decode("utf-8")
 
     return detections, encoded_image
 
 
+# =========================
+# Predict endpoint
+# =========================
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    """Predict traffic signs from uploaded image"""
-    
-    # Check if model is loaded
     if model is None:
         raise HTTPException(status_code=503, detail="Model not available")
-    
+
     contents = await file.read()
 
-    # 🔒 SAFETY CHECK 1: empty upload
+    # Empty upload
     if not contents:
         raise HTTPException(status_code=400, detail="Empty file received")
 
-    # 🔒 SAFETY CHECK 2: file size limit
+    # File size limit
     if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 10MB)")
+        raise HTTPException(status_code=413, detail="File too large. Max size is 10MB")
 
-    # Decode image from bytes
+    # Decode image
     npimg = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(npimg, cv2.IMREAD_COLOR)
-    
-    # 🔒 SAFETY CHECK 3: invalid image
+
     if img is None:
         raise HTTPException(status_code=400, detail="Invalid image format")
 
-    # Optimize image size if too large (work on a copy)
+    # Resize large image
     height, width = img.shape[:2]
+
     if width > 1280:
         scale = 1280 / width
         new_width = 1280
         new_height = int(height * scale)
-        img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
+        img = cv2.resize(
+            img,
+            (new_width, new_height),
+            interpolation=cv2.INTER_AREA
+        )
+
+    # Run prediction
     try:
         results = model.predict(
             source=img,
@@ -225,21 +416,30 @@ async def predict(file: UploadFile = File(...)):
             max_det=MAX_DETECTIONS,
             agnostic_nms=True,
             verbose=False,
-            device='cpu'  # Explicitly set device
+            device=PREDICT_DEVICE
         )[0]
+
     except Exception as e:
         logger.error(f"Prediction error: {e}")
         raise HTTPException(status_code=500, detail="Prediction failed")
 
+    # Process detection result
     try:
         detections, encoded = process_detections(results, img)
+
     except Exception as e:
         logger.error(f"Processing error: {e}")
         raise HTTPException(status_code=500, detail="Post-processing failed")
 
+    detections = sorted(
+        detections,
+        key=lambda x: x["confidence"],
+        reverse=True
+    )
+
     logger.info(f"Detected {len(detections)} signs")
 
     return {
-        "detections": sorted(detections, key=lambda x: x["confidence"], reverse=True),
+        "detections": detections,
         "processed_image": encoded
     }
