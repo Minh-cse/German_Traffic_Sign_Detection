@@ -247,7 +247,7 @@ const App = () => {
                         ref={webcamRef}
                         screenshotFormat="image/jpeg"
                         className="w-full h-full object-cover"
-                        videoConstraints={{ facingMode: "environment" }}
+                        videoConstraints={{ facingMode: { ideal: "environment" } }}
                       />
                       <div className="absolute top-4 left-4 z-30">
                         <div className="bg-red-500 text-white px-3 py-1 rounded-full text-xs flex items-center gap-2 shadow-sm animate-pulse">

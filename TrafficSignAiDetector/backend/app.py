@@ -115,7 +115,7 @@ TEXT_THICKNESS = 1
 
 # Nếu bạn đang chạy CPU thì để "cpu"
 # Nếu muốn dùng GPU NVIDIA, thử đổi thành 0 hoặc "cuda"
-PREDICT_DEVICE = "cuda"
+PREDICT_DEVICE = "cuda" if GPU_AVAILABLE else "cpu"
 
 
 # =========================
