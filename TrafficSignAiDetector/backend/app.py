@@ -156,14 +156,6 @@ async def health_check():
 # =========================
 @app.get("/metrics")
 async def get_metrics():
-    """
-    Return real-time system usage:
-    - CPU usage
-    - RAM usage
-    - Current Python process RAM usage
-    - GPU usage if NVIDIA GPU is available
-    """
-
     process = psutil.Process(os.getpid())
 
     cpu_percent = psutil.cpu_percent(interval=0.1)
